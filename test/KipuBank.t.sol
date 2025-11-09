@@ -91,5 +91,45 @@ contract KipuBankTest is BaseTest {
     vm.stopPrank();
     assertGt(balanceAfter, balanceBefore);
   }
+  
+  function test_withdraw_usdc() public {
+    vm.startPrank(FACUNDO);
+    usdc.approve(address(sKipu), 10_000 * 1e6);
+    sKipu.depositUSDC(1_000 * 1e6);
+    
+    uint256 balanceBefore = usdc.balanceOf(FACUNDO);
+    console.log("Before ETH balance", balanceBefore);
+    sKipu.withdrawUSDC(900 * 1e6);
+
+    uint256 balanceAfter = usdc.balanceOf(FACUNDO);
+    console.log("Before ETH balance", balanceAfter);
+    vm.stopPrank();
+    assertGt(balanceAfter, balanceBefore);    
+  }
+
+  function test_withdraw_eth() public {
+    vm.startPrank(FACUNDO);
+    sKipu.depositETH{value : 10000 gwei}();
+    
+    uint256 balanceBefore = usdc.balanceOf(FACUNDO);
+    console.log("Before ETH balance", balanceBefore);
+    uint256 amount = 1000 gwei;
+    sKipu.withdrawETH(amount);
+
+    uint256 balanceAfter = sKipu.balanceOf(FACUNDO, address(0));
+    vm.stopPrank();
+    assertGt(balanceAfter, balanceBefore);    
+  }
+
+  function test_remove_token() public {
+    vm.startPrank(FACUNDO);
+    _approveToken(address(dai));
+    bool statusBefore = sKipu.isTokenAllowed(address(dai));
+    sKipu.removeToken(address(dai));
+    bool statusAfter = sKipu.isTokenAllowed(address(dai));
+    vm.stopPrank();
+    assertTrue(statusBefore);
+    assertFalse(statusAfter);
+  }
 
 }

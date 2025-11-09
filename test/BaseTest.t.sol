@@ -68,7 +68,9 @@ abstract contract BaseTest is Test {
         sKipu.pauseContract(); // si hace falta pausar antes de aprobar
         sKipu.approveToken(token);
     }
+    
     function _unpauseAsOwner() internal {
         sKipu.unpauseContract();
     }
+
 }
