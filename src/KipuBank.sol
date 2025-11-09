@@ -467,10 +467,6 @@ contract KipuBank is ReentrancyGuard, Ownable, Pausable, AccessControl {
         path[0] = _tokenIn;
         path[1] = address(i_usdc);
 
-        uint[] memory amounts = ROUTER.getAmountsOut(_amountIn, path);
-
-        if(amounts[amounts.length -1] + s_totalContract > i_bankCap) revert KipuBank_ExceededLimit(amounts[amounts.length - 1]);
-
         uint[] memory amountsToSwap = ROUTER.swapExactTokensForTokens(
             _amountIn,
             _amountOutMin,
