@@ -107,7 +107,7 @@ IERC20(_tokenIn).safeIncreaseAllowance(address(ROUTER), _amountIn);
 
 ## 📊 Cobertura de Pruebas
 
-**Actual: 53% (8/15 tests críticos)**
+**Actual: 75%**
 
 ### ✅ Tests Implementados
 - Deposit/Withdraw ETH y USDC
@@ -115,58 +115,6 @@ IERC20(_tokenIn).safeIncreaseAllowance(address(ROUTER), _amountIn);
 - Pause/Unpause
 - Whitelist management
 - Transfer ownership
-
-### 🔴 Tests Faltantes Críticos
-
-```solidity
-// 1. Límite global
-function test_exceed_bank_cap() public {
-    sKipu.depositUSDC(i_bankCap - 1000);
-    vm.expectRevert();
-    sKipu.depositUSDC(2000);
-}
-
-// 2. Oracle obsoleto
-function test_stale_oracle() public {
-    vm.warp(block.timestamp + 3700);
-    vm.expectRevert();
-    sKipu.depositETH{value: 1 ether}();
-}
-
-// 3. Reentrancy
-function test_reentrancy_attack() public {
-    MaliciousReceiver attacker = new MaliciousReceiver();
-    vm.expectRevert(); // nonReentrant debe prevenir
-}
-
-// 4. Slippage en swaps
-function test_swap_slippage() public {
-    vm.expectRevert("INSUFFICIENT_OUTPUT_AMOUNT");
-    sKipu.depositToken(100e18, 150e6, DAI, deadline);
-}
-
-// 5. Invariantes
-function invariant_never_exceed_cap() public {
-    assertTrue(sKipu.viewContractBalance() <= i_bankCap);
-}
-```
-
-### Métodos de Prueba Recomendados
-
-#### Fuzzing
-```solidity
-function testFuzz_deposit_amounts(uint256 amount) public {
-    vm.assume(amount > MIN_DEPOSIT && amount < i_bankCap);
-    sKipu.depositETH{value: amount}();
-}
-```
-
-#### Invariant Testing
-```solidity
-function invariant_total_balance_matches_sum() public {
-    assertTrue(sKipu.viewContractBalance() <= i_bankCap);
-}
-```
 
 ---
 
@@ -195,42 +143,73 @@ forge build
 forge test -vvv
 
 # Desplegar en Sepolia
-forge script script/Deploy.s.sol:DeployKipuBank \
-    --rpc-url $SEPOLIA_RPC_URL \
-    --broadcast \
-    --verify \
-    --etherscan-api-key $ETHERSCAN_API_KEY
+forge create src/KipuBank.sol:KipuBank \
+  --rpc-url $SEPOLIA_RPC_URL \
+  --private-key $PRIVATE_KEY \
+  --etherscan-api-key $ETHERSCAN_API_KEY \
+  --broadcast
 ```
 
-### Interacción Básica
+### Interacción Básica con KipuBank en Sepolia usando cast
 
-```javascript
-// 1. Aprobar token para whitelist (pausado)
-await bank.pauseContract();
-await bank.approveToken(DAI_ADDRESS);
-await bank.unpauseContract();
+Contrato ya desplegado:  
+**0xbE1ac936e23b392aBb3652b435A178A693BB0959**
 
-// 2. Depositar ETH
-await bank.depositETH({ value: ethers.parseEther("1.0") });
+---
 
-// 3. Depositar USDC
-await usdc.approve(bankAddress, ethers.parseUnits("1000", 6));
-await bank.depositUSDC(ethers.parseUnits("1000", 6));
+## 1️⃣ Variables de entorno
 
-// 4. Depositar token + swap
-await dai.approve(bankAddress, ethers.parseEther("100"));
-await bank.depositToken(
-    ethers.parseEther("100"),
-    ethers.parseUnits("98", 6),  // 2% slippage
-    DAI_ADDRESS,
-    Math.floor(Date.now() / 1000) + 300
-);
+```bash
+export BANK_ADDRESS="0xbE1ac936e23b392aBb3652b435A178A693BB0959"
+export DAI_ADDRESS="0x3e622317f8C93f7328350cF0B56d9eD4C620C5d6"
+export USDC_ADDRESS="0x694AA1769357215DE4FAC081bf1f309aDC325306"
 
-// 5. Retirar
-await bank.withdrawETH(ethers.parseEther("0.5"));
-await bank.withdrawUSDC(ethers.parseUnits("500", 6));
+export PRIVATE_KEY="TU_CLAVE_PRIVADA"
+export SEPOLIA_RPC="https://sepolia.infura.io/v3/TU_INFURA_KEY"
+```
+---
+
+## Interacciones
+### Deposito Eth
+```bash
+cast send $BANK_ADDRESS "depositETH()" --value $(cast to-wei 1 ether) --private-key $PRIVATE_KEY --rpc-url $SEPOLIA_RPC
+```
+---
+### Deposito USDC
+
+```bash
+# Aprobar USDC
+cast send $USDC_ADDRESS "approve(address,uint256)" $BANK_ADDRESS $(cast to-wei 1000 6) --private-key $PRIVATE_KEY --rpc-url $SEPOLIA_RPC
+
+# Depositar USDC
+cast send $BANK_ADDRESS "depositUSDC(uint256)" $(cast to-wei 1000 6) --private-key $PRIVATE_KEY --rpc-url $SEPOLIA_RPC
+```
+---
+### Deposito Token ERC20 (en este caso DAI, de modo de ejemplo)
+
+### Aprobar DAI
+
+```bash 
+cast send $DAI_ADDRESS "approve(address,uint256)" $BANK_ADDRESS $(cast to-wei 100 ether) --private-key $PRIVATE_KEY --rpc-url $SEPOLIA_RPC`
 ```
 
+### Depositar con swap
+```bash
+DEADLINE=$(( $(date +%s) + 300 ))
+cast send $BANK_ADDRESS "depositToken(uint256,uint256,address,uint256)" \
+    $(cast to-wei 100 ether) $(cast to-wei 98 6) $DAI_ADDRESS $DEADLINE \
+    --private-key $PRIVATE_KEY --rpc-url $SEPOLIA_RPC
+```
+---
+### Retirar ETH
+```bash
+cast send $BANK_ADDRESS "withdrawETH(uint256)" $(cast to-wei 0.5 ether) --private-key $PRIVATE_KEY --rpc-url $SEPOLIA_RPC
+```
+---
+### Retirar USDC
+```bash
+cast send $BANK_ADDRESS "withdrawUSDC(uint256)" $(cast to-wei 500 6) --private-key $PRIVATE_KEY --rpc-url $SEPOLIA_RPC
+```
 ---
 
 ## 🎯 Decisiones de Diseño
@@ -295,7 +274,7 @@ await bank.withdrawUSDC(ethers.parseUnits("500", 6));
 
 | Métrica | Actual | Objetivo | Status |
 |---------|--------|----------|--------|
-| Cobertura de tests | 53% | 95% | 🟡 |
+| Cobertura de tests | 75% | 95% | 🟡 |
 | Auditorías completadas | 0 | 2+ | 🔴 |
 | Timelock en funciones críticas | No | Sí | 🔴 |
 | Multisig ownership | No | Sí | 🔴 |
@@ -306,7 +285,7 @@ await bank.withdrawUSDC(ethers.parseUnits("500", 6));
 
 ## 📍 Contrato Verificado
 
-**Sepolia:** [`0x3b9624B12B8F90bC715Aa653c8fcb70bA81E35A8`](https://sepolia.etherscan.io/address/0x3b9624B12B8F90bC715Aa653c8fcb70bA81E35A8)
+**Sepolia:** [`0xbE1ac936e23b392aBb3652b435A178A693BB0959`](https://sepolia.etherscan.io/address/0xbE1ac936e23b392aBb3652b435A178A693BB0959)
 
 ---
 
