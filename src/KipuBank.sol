@@ -6,21 +6,24 @@ pragma solidity ^0.8.30;
     /// @author Facundo Alejandro Caniza
 
 /// @notice OpenZeppeling imports
-/// @dev Must be imported ReentrancyGuard, IERC20, SafeIERC, Ownable, Pausable and AccesControl
+/// @dev Must be imported ReentrancyGuard, IERC20, SafeIERC, Ownable, Pausable, Math and AccesControl
 import "@openzeppelin/utils/ReentrancyGuard.sol";
 import "@openzeppelin/token/ERC20/IERC20.sol";
 import "@openzeppelin/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/access/Ownable.sol";
 import "@openzeppelin/utils/Pausable.sol";
 import "@openzeppelin/access/AccessControl.sol";
+import "@openzeppelin/utils/math/Math.sol";
 
 // !TODO: Implementar el proxy
 import "@openzeppelin/proxy/utils/UUPSUpgradeable.sol";
+
 
 /// @notice ChainLink Interface import
 /// @dev We use data feeds interface
 import "@chainlink/interfaces/AggregatorV3Interface.sol";
 
+/// @notice Uniswap Router V2 interface 
 interface IUniswapV2Router02 {
 
     function WETH() external pure returns (address);
@@ -45,6 +48,9 @@ interface IUniswapV2Router02 {
 }
 
 contract KipuBank is ReentrancyGuard, Ownable, Pausable, AccessControl {
+
+    /// @notice using Math OpenZeppelin Library for safe operations
+    using Math for uint256;
 
     /// @notice Router of Uniswap
     IUniswapV2Router02 public immutable ROUTER;
@@ -100,7 +106,7 @@ contract KipuBank is ReentrancyGuard, Ownable, Pausable, AccessControl {
 
     /// @notice Storage structure that stores a token amount, in different tokens, for each address
     /// @dev In the first mapping we have token address, in the nested mapping we have the holder and their balance
-    mapping (address token => mapping (address holder => uint256 amount)) private s_balances;
+    mapping(address token => mapping(address holder => uint256 amount)) private s_balances;
 
     /// @notice Storage structure that stores the allowed tokens
     mapping(address token => bool) private s_allowedToken;
@@ -234,9 +240,13 @@ contract KipuBank is ReentrancyGuard, Ownable, Pausable, AccessControl {
     /// @param amount The amount that is below the minimum
     error KipuBank_LowerMinimumAmount(uint256 amount);
 
-    ///@notice Error out of time for the swap
+    /// @notice Error out of time for the swap
     /// @param time The time of the block timestamp
     error KipuBank_ExceededTime(uint256 time);
+
+    /// @notice Error that a operation return an invalid result
+    /// @param result The invalid result
+    error KipuBank_InvalidOperation(uint256 result);
 
     /// @notice Contract constructor
     /// @param _limit The global limit for the contract
@@ -369,10 +379,14 @@ contract KipuBank is ReentrancyGuard, Ownable, Pausable, AccessControl {
 
     /// @notice The function to convert ETH to USDC
     /// @param _amount The entered amount to convert
-    /// @return convertedAmount_ The amount converted
+    /// @return uint256 The amount converted
     /// @dev The operation perfomed is level the bases
-    function convertEthInUSD(uint256 _amount) internal view returns (uint256 convertedAmount_) {
-            convertedAmount_ = (_amount* chainLinkFeeds()) / DECIMAL_FACTOR;
+    function convertEthInUSD(uint256 _amount) internal view returns (uint256) {
+        (bool successMul, uint256 resultMul) = _amount.tryMul(chainLinkFeeds());
+        if(!successMul) revert KipuBank_InvalidOperation(resultMul);
+        (bool successDiv, uint256 resultDiv) = resultMul.tryDiv(DECIMAL_FACTOR);
+        if(!successDiv) revert KipuBank_InvalidOperation(resultDiv);
+        return resultDiv;
     }
 
     /// @notice Private function to perform the ETH withdraw
@@ -381,9 +395,17 @@ contract KipuBank is ReentrancyGuard, Ownable, Pausable, AccessControl {
     /// @dev It is used the NonReentrant OpenZeppelin function
     function _withdrawETH(uint256 _amount) private nonReentrant verifyEthWithdraw(_amount) {
         uint256 amountUSD = convertEthInUSD(_amount);
-        s_balances[address(0)][msg.sender] -= _amount;
+        uint256 senderBalance = s_balances[address(0)][msg.sender];
+
+        (bool successSub, uint256 resultSub) = senderBalance.trySub(_amount);
+        if(!successSub) revert KipuBank_InvalidOperation(resultSub);
+
+        s_balances[address(0)][msg.sender] = resultSub;
         s_withdrawal++;
-        s_totalContract -= amountUSD;
+
+        (bool successSubTotal, uint256 resultSubTotal) = s_totalContract.trySub(amountUSD);
+        if(!successSubTotal) revert KipuBank_InvalidOperation(resultSubTotal);
+        s_totalContract = resultSubTotal;
         
         emit KipuBank_SuccessfulWithdrawal(msg.sender, amountUSD);
 
@@ -397,10 +419,21 @@ contract KipuBank is ReentrancyGuard, Ownable, Pausable, AccessControl {
     /// @dev Is updated the state before the transfer, CEI pattern
     /// @dev It is used the SafeIERC20 interface of OpenZeppelin
     function _withdrawUSDC(uint256 _amount) private nonReentrant verifyWithdrawUSDC(_amount) {
-        s_balances[address(i_usdc)][msg.sender] -= _amount;
+
+        uint256 senderBalance = s_balances[address(i_usdc)][msg.sender];
+
+        (bool successSub, uint256 resultSubBalance) = senderBalance.trySub(_amount);
+        if(!successSub) revert KipuBank_InvalidOperation(resultSubBalance);
+
+        s_balances[address(i_usdc)][msg.sender] = resultSubBalance;
         s_withdrawal++;
-        s_totalContract -= _amount;
+
+        (bool successSubTotal, uint256 resultSubTotal) = s_totalContract.trySub(_amount);
+        if(!successSubTotal) revert KipuBank_InvalidOperation(_amount);
+        s_totalContract = resultSubTotal;
+
         emit KipuBank_SuccessfulWithdrawal(msg.sender, _amount);
+
         i_usdc.safeTransfer(msg.sender, _amount);
     }
 
@@ -422,9 +455,18 @@ contract KipuBank is ReentrancyGuard, Ownable, Pausable, AccessControl {
     /// @param _amountETH The amount in ETH to deposit
     /// @dev A private function is implemented to save gas, calling the data feed
     function _depositETH(address _holder, uint256 _amountUSD, uint256 _amountETH) private verifyEthDeposit(_amountUSD, _amountETH) {
-        s_balances[address(0)][_holder] += _amountETH;
+
+        uint256 senderBalance = s_balances[address(0)][_holder];
+
+        (bool successAdd, uint256 resultAdd) = senderBalance.tryAdd(_amountETH);
+        if(!successAdd) revert KipuBank_InvalidOperation(resultAdd);
+        s_balances[address(0)][_holder] = resultAdd;
         s_deposits++;
-        s_totalContract += _amountUSD;
+
+        (bool successAddTotal, uint256 resultTotalAdd) = s_totalContract.tryAdd(_amountUSD);
+        if(!successAddTotal) revert KipuBank_InvalidOperation(resultTotalAdd);
+        s_totalContract = resultTotalAdd;
+
         emit KipuBank_SuccessfulDeposit(_holder, _amountUSD);
     }
 
@@ -442,9 +484,18 @@ contract KipuBank is ReentrancyGuard, Ownable, Pausable, AccessControl {
     /// @dev We need the aprobation of the owner tokens
     function depositUSDC(uint256 _amount) external verifyUsdcAmount(_amount) whenNotPaused {
         if ( i_usdc.allowance(msg.sender, address(this)) < _amount ) revert KipuBank_NonPermittedAmount(_amount);
-        s_balances[address(i_usdc)][msg.sender] += _amount;
+        uint256 senderBalance = s_balances[address(i_usdc)][msg.sender];
+
+        (bool successAddAmount, uint256 resultAddAmount) = senderBalance.tryAdd(_amount);
+        
+        if(!successAddAmount) revert KipuBank_InvalidOperation(resultAddAmount);
+        s_balances[address(i_usdc)][msg.sender] = resultAddAmount;
         s_deposits++;
-        s_totalContract += _amount;
+
+        (bool successAddTotal, uint256 resultAddTotal) = s_totalContract.tryAdd(_amount);
+        if(!successAddTotal) revert KipuBank_InvalidOperation(resultAddTotal);
+        s_totalContract = resultAddTotal;
+
         emit KipuBank_SuccessfulDeposit(msg.sender, _amount);
         i_usdc.safeTransferFrom(msg.sender, address(this), _amount);
     }
@@ -484,8 +535,18 @@ contract KipuBank is ReentrancyGuard, Ownable, Pausable, AccessControl {
             _amountIn,
             amountsToSwap[amountsToSwap.length - 1]
         );
-        s_totalContract += amountsToSwap[amountsToSwap.length - 1];
-        s_balances[address(i_usdc)][msg.sender] += amountsToSwap[amountsToSwap.length - 1];
+
+        uint256 amountOut = amountsToSwap[amountsToSwap.length - 1];
+
+        (bool successTotalContract, uint256 resultTotalContract) = s_totalContract.tryAdd(amountOut);
+        if(!successTotalContract) revert KipuBank_InvalidOperation(resultTotalContract);
+        s_totalContract = resultTotalContract;
+
+        uint256 senderBalance = s_balances[address(i_usdc)][msg.sender];
+
+        (bool successAddBalance, uint256 resultAddBalance) = senderBalance.tryAdd(amountOut);
+        if(!successAddBalance) revert KipuBank_InvalidOperation(resultAddBalance);
+        s_balances[address(i_usdc)][msg.sender] = resultAddBalance;
     }
 
     /// @notice Function to approved tokens to swap
